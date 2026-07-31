@@ -2,6 +2,7 @@ import "../utils/pdfPolyfill.js";
 import fs from "fs"
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { askAi } from "../services/openRouter.service.js";
+import { textToSpeech } from "../services/sarvam.service.js";
 import User from "../models/user.model.js";
 import Interview from "../models/interview.model.js";
 
@@ -457,5 +458,24 @@ export const getInterviewReport = async (req,res) => {
 }
 
 
+/**
+ * POST /api/interview/tts
+ * Converts a piece of text to Sarvam AI audio.
+ * Returns { audioBase64 } — a WAV file encoded as base64.
+ */
+export const speakQuestion = async (req, res) => {
+  try {
+    const { text, gender } = req.body;
 
+    if (!text || typeof text !== "string" || text.trim().length === 0) {
+      return res.status(400).json({ message: "text is required" });
+    }
 
+    const audioBase64 = await textToSpeech(text.trim(), gender || "female");
+
+    return res.status(200).json({ audioBase64 });
+  } catch (error) {
+    console.error("Sarvam TTS error:", error.response?.data || error.message);
+    return res.status(500).json({ message: "TTS failed", error: error.message });
+  }
+};
