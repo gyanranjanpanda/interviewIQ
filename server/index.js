@@ -19,11 +19,7 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: function (origin, callback) {
-        if (!origin || allowedOrigins.includes(origin) || origin.endsWith(".onrender.com")) {
-            callback(null, true);
-        } else {
-            callback(null, true);
-        }
+        callback(null, origin || true);
     },
     credentials: true
 }))
