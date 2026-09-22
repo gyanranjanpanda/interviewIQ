@@ -20,6 +20,7 @@ function Step1SetUp({ onStart }) {
     const [mode, setMode] = useState("Technical");
     const [resumeFile, setResumeFile] = useState(null);
     const [loading, setLoading] = useState(false);
+    const [error, setError] = useState("");
     const [projects, setProjects] = useState([]);
     const [skills, setSkills] = useState([]);
     const [resumeText, setResumeText] = useState("");
@@ -49,24 +50,36 @@ function Step1SetUp({ onStart }) {
             setAnalyzing(false);
 
         } catch (error) {
-            console.log(error)
+            console.error(error)
+            setError("Failed to analyze resume. Please try again or skip it.")
             setAnalyzing(false);
         }
     }
 
     const handleStart = async () => {
+        setError("")
+
+        if (!userData) {
+            setError("Please sign in to start an interview.")
+            return;
+        }
+
+        if (userData.credits <= 0) {
+            setError("You have no credits left. Please buy more credits to continue.")
+            return;
+        }
+
         setLoading(true)
         try {
            const result = await axios.post(ServerUrl + "/api/interview/generate-questions" , {role, experience, mode , resumeText, projects, skills } , {withCredentials:true}) 
-           console.log(result.data)
-           if(userData){
-            dispatch(setUserData({...userData , credits:result.data.creditsLeft}))
-           }
+           dispatch(setUserData({...userData , credits:result.data.creditsLeft}))
            setLoading(false)
            onStart(result.data)
 
-        } catch (error) {
-            console.log(error)
+        } catch (err) {
+            console.error(err)
+            const message = err?.response?.data?.message || "Failed to start interview. Please try again."
+            setError(message)
             setLoading(false)
         }
     }
@@ -249,13 +262,19 @@ function Step1SetUp({ onStart }) {
                         )}
 
 
+                        {error && (
+                            <div className='bg-red-50 border border-red-200 text-red-600 text-sm px-4 py-3 rounded-xl'>
+                                {error}
+                            </div>
+                        )}
+
                         <motion.button
                         onClick={handleStart}
                             disabled={!role || !experience || loading}
                             whileHover={{ scale: 1.03 }}
                             whileTap={{ scale: 0.95 }}
                             className='w-full disabled:bg-gray-600 bg-green-600 hover:bg-green-700 text-white py-3 rounded-full text-lg font-semibold transition duration-300 shadow-md'>
-                            {loading ? "Staring...":"Start Interview"}
+                            {loading ? "Starting..." : "Start Interview"}
 
 
                         </motion.button>
