@@ -1,7 +1,7 @@
 import axios from "axios"
 
 const DEFAULT_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-const DEFAULT_MODEL = "llama-3.3-70b-versatile"
+const DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 // Read env lazily, never at module scope: ES module imports are hoisted above
 // dotenv.config() in index.js, so top-level reads would always see undefined.
