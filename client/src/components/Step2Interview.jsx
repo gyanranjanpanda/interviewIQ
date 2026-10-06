@@ -5,7 +5,7 @@ import Timer from './Timer'
 import { motion } from "motion/react"
 import { FaMicrophone, FaMicrophoneSlash } from "react-icons/fa"
 import axios from "axios"
-import { ServerUrl } from '../App'
+import { ServerUrl } from '../config'
 import { BsArrowRight } from 'react-icons/bs'
 
 function Step2Interview({ interviewData, onFinish }) {

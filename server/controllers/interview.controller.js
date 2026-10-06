@@ -1,22 +1,73 @@
 import "../utils/pdfPolyfill.js";
 import fs from "fs"
+import path from "path";
+import { createRequire } from "module";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { askAi } from "../services/openRouter.service.js";
+import { parseAiJson } from "../utils/safeJson.js";
 import { textToSpeech } from "../services/sarvam.service.js";
 import User from "../models/user.model.js";
 import Interview from "../models/interview.model.js";
 
-export const analyzeResume = async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ message: "Resume required" });
-    }
-    const filepath = req.file.path
+// pdfjs needs the packaged standard fonts on disk, otherwise every resume that
+// uses a non-embedded font logs warnings and can drop glyphs.
+const require = createRequire(import.meta.url);
+const STANDARD_FONT_DATA_URL = path.join(
+  path.dirname(require.resolve("pdfjs-dist/package.json")),
+  "standard_fonts/"
+);
 
+// Groq has a token ceiling per request; a long resume would otherwise blow it.
+const MAX_RESUME_CHARS = 12000;
+
+const toStringField = (value) => {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.filter(Boolean).join(", ");
+  if (value == null) return "";
+  return String(value);
+};
+
+const toStringArray = (value) => {
+  if (!Array.isArray(value)) return value ? [toStringField(value)].filter(Boolean) : [];
+  return value
+    .map((item) => {
+      if (typeof item === "string") return item.trim();
+      // The model sometimes returns objects like { name, description }
+      if (item && typeof item === "object") {
+        return toStringField(item.name || item.title || item.project || item.skill);
+      }
+      return "";
+    })
+    .filter(Boolean);
+};
+
+export const analyzeResume = async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: "Resume required" });
+  }
+
+  const filepath = req.file.path;
+
+  try {
     const fileBuffer = await fs.promises.readFile(filepath)
     const uint8Array = new Uint8Array(fileBuffer)
 
-    const pdf = await pdfjsLib.getDocument({ data: uint8Array }).promise;
+    let pdf;
+    try {
+      pdf = await pdfjsLib.getDocument({
+        data: uint8Array,
+        standardFontDataUrl: STANDARD_FONT_DATA_URL,
+        // No DOM in Node, and eval is unnecessary for text extraction.
+        disableFontFace: true,
+        isEvalSupported: false,
+        useSystemFonts: false,
+      }).promise;
+    } catch (pdfError) {
+      console.error("PDF parse error:", pdfError.message);
+      return res.status(400).json({
+        message: "Could not read that PDF. It may be corrupted or password protected.",
+      });
+    }
 
     let resumeText = "";
 
@@ -29,10 +80,18 @@ export const analyzeResume = async (req, res) => {
       resumeText += pageText + "\n";
     }
 
-
     resumeText = resumeText
       .replace(/\s+/g, " ")
       .trim();
+
+    // Scanned/image-only resumes extract to nothing - there is no point calling the AI.
+    if (resumeText.length < 50) {
+      return res.status(400).json({
+        message: "No readable text found in this PDF. If it is a scan, please fill the fields manually.",
+      });
+    }
+
+    const truncatedResume = resumeText.slice(0, MAX_RESUME_CHARS);
 
     const messages = [
       {
@@ -48,38 +107,36 @@ Return strictly JSON:
   "projects": ["project1", "project2"],
   "skills": ["skill1", "skill2"]
 }
+
+Rules:
+- "role" and "experience" must be plain strings, never arrays or objects.
+- "projects" and "skills" must be arrays of plain strings.
+- If something is not present in the resume, use "" for strings and [] for arrays.
 `
       },
       {
         role: "user",
-        content: resumeText
+        content: truncatedResume
       }
     ];
 
-
-    const aiResponse = await askAi(messages)
-
-    const parsed = JSON.parse(aiResponse);
-
-    fs.unlinkSync(filepath)
-
+    const aiResponse = await askAi(messages, { json: true })
+    const parsed = parseAiJson(aiResponse);
 
     res.json({
-      role: parsed.role,
-      experience: parsed.experience,
-      projects: parsed.projects,
-      skills: parsed.skills,
+      role: toStringField(parsed.role),
+      experience: toStringField(parsed.experience),
+      projects: toStringArray(parsed.projects),
+      skills: toStringArray(parsed.skills),
       resumeText
     });
 
   } catch (error) {
-    console.error(error);
-
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
-
-    return res.status(500).json({ message: error.message });
+    console.error("analyzeResume failed:", error);
+    return res.status(500).json({ message: error.message || "Failed to analyze resume." });
+  } finally {
+    // Always clean up the upload, on success and failure alike.
+    await fs.promises.unlink(filepath).catch(() => {});
   }
 };
 
@@ -118,7 +175,9 @@ export const generateQuestion = async (req, res) => {
       ? skills.join(", ")
       : "None";
 
-    const safeResume = resumeText?.trim() || "None";
+    const safeResume = resumeText?.trim()
+      ? resumeText.trim().slice(0, MAX_RESUME_CHARS)
+      : "None";
 
     const userPrompt = `
     Role:${role}
@@ -184,11 +243,19 @@ Make questions based on the candidate’s role, experience,interviewMode, projec
 
     }
 
-    const questionsArray = aiResponse
+    const cleanedLines = aiResponse
       .split("\n")
       .map(q => q.trim())
-      .filter(q => q.length > 0)
-      .slice(0, 5);
+      // The model sometimes numbers or bullets the lines despite being told not to.
+      .map(q => q.replace(/^(?:[-*\u2022]|\d+[.)])\s*/, "").trim())
+      .filter(q => q.length > 0);
+
+    // Drop chatty wrappers like "Here are the questions:" so they cannot take the
+    // place of a real question. Matching on a trailing colon rather than on a
+    // trailing "?" keeps valid imperative prompts ("Tell me about a time...").
+    const questionLines = cleanedLines.filter(q => !q.endsWith(":") && q.length > 15);
+
+    const questionsArray = (questionLines.length ? questionLines : cleanedLines).slice(0, 5);
 
     if (questionsArray.length === 0) {
       
@@ -220,7 +287,8 @@ Make questions based on the candidate’s role, experience,interviewMode, projec
       questions: interview.questions
     });
   } catch (error) {
-    return res.status(500).json({message:`failed to create interview ${error}`})
+    console.error("generateQuestion failed:", error);
+    return res.status(500).json({ message: error.message || "Failed to create interview." })
   }
 }
 
@@ -230,7 +298,16 @@ export const submitAnswer = async (req, res) => {
     const { interviewId, questionIndex, answer, timeTaken } = req.body
 
     const interview = await Interview.findById(interviewId)
+
+    if (!interview) {
+      return res.status(404).json({ message: "Interview not found." });
+    }
+
     const question = interview.questions[questionIndex]
+
+    if (!question) {
+      return res.status(400).json({ message: "Invalid question index." });
+    }
 
     // If no answer
     if (!answer) {
@@ -314,10 +391,9 @@ Answer: ${answer}
     ];
 
 
-    const aiResponse = await askAi(messages)
+    const aiResponse = await askAi(messages, { json: true })
 
-
-    const parsed = JSON.parse(aiResponse);
+    const parsed = parseAiJson(aiResponse);
 
     question.answer = answer;
     question.confidence = parsed.confidence;
@@ -330,7 +406,8 @@ Answer: ${answer}
 
     return res.status(200).json({feedback :parsed.feedback})
   } catch (error) {
-    return res.status(500).json({message:`failed to submit answer ${error}`})
+    console.error("submitAnswer failed:", error);
+    return res.status(500).json({ message: error.message || "Failed to submit answer." })
 
   }
 }

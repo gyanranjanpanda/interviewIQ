@@ -9,7 +9,7 @@ import {
 } from "react-icons/fa";
 import { useState } from 'react';
 import axios from "axios"
-import { ServerUrl } from '../App';
+import { ServerUrl } from '../config';
 import { useDispatch, useSelector } from 'react-redux';
 import { setUserData } from '../redux/userSlice';
 function Step1SetUp({ onStart }) {
@@ -30,15 +30,20 @@ function Step1SetUp({ onStart }) {
 
     const handleUploadResume = async () => {
         if (!resumeFile || analyzing) return;
+
+        if (!userData) {
+            setError("Please sign in before analyzing a resume.")
+            return;
+        }
+
         setAnalyzing(true)
+        setError("")
 
         const formdata = new FormData()
         formdata.append("resume", resumeFile)
 
         try {
             const result = await axios.post(ServerUrl + "/api/interview/resume", formdata, { withCredentials: true })
-
-            console.log(result.data)
 
             setRole(result.data.role || "");
             setExperience(result.data.experience || "");
@@ -47,13 +52,25 @@ function Step1SetUp({ onStart }) {
             setResumeText(result.data.resumeText || "");
             setAnalysisDone(true);
 
-            setAnalyzing(false);
-
         } catch (error) {
             console.error(error)
-            setError("Failed to analyze resume. Please try again or skip it.")
+            // Surface what the server actually said so the user knows whether to
+            // retry, re-export the PDF, or just fill the fields in by hand.
+            const message = error?.response?.data?.message
+                || "Failed to analyze resume. Please try again or skip it."
+            setError(message)
+        } finally {
             setAnalyzing(false);
         }
+    }
+
+    const handleResetResume = () => {
+        setResumeFile(null)
+        setAnalysisDone(false)
+        setProjects([])
+        setSkills([])
+        setResumeText("")
+        setError("")
     }
 
     const handleStart = async () => {
@@ -206,17 +223,16 @@ function Step1SetUp({ onStart }) {
 
                                 {resumeFile && (
                                     <motion.button
-                                        whileHover={{ scale: 1.02 }}
+                                        type="button"
+                                        disabled={analyzing}
+                                        whileHover={{ scale: analyzing ? 1 : 1.02 }}
                                         onClick={(e) => {
                                             e.stopPropagation();
                                             handleUploadResume()
                                         }}
 
-                                        className='mt-4 bg-gray-900 text-white px-5 py-2 rounded-lg hover:bg-gray-800 transition'>
+                                        className='mt-4 bg-gray-900 disabled:bg-gray-400 disabled:cursor-not-allowed text-white px-5 py-2 rounded-lg hover:bg-gray-800 transition'>
                                         {analyzing ? "Analyzing..." : "Analyze Resume"}
-
-
-
                                     </motion.button>)}
 
                             </motion.div>
@@ -229,8 +245,16 @@ function Step1SetUp({ onStart }) {
                                 initial={{ opacity: 0, y: 20 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 className='bg-gray-50 border border-gray-200 rounded-xl p-5 space-y-4'>
-                                <h3 className='text-lg font-semibold text-gray-800'>
-                                    Resume Analysis Result</h3>
+                                <div className='flex items-center justify-between'>
+                                    <h3 className='text-lg font-semibold text-gray-800'>
+                                        Resume Analysis Result</h3>
+
+                                    <button type="button"
+                                        onClick={handleResetResume}
+                                        className='text-sm text-green-700 hover:underline'>
+                                        Use a different resume
+                                    </button>
+                                </div>
 
                                 {projects.length > 0 && (
                                     <div>

@@ -11,7 +11,7 @@ import InterviewHistory from './pages/InterviewHistory'
 import Pricing from './pages/Pricing'
 import InterviewReport from './pages/InterviewReport'
 
-export const ServerUrl = "https://interviewiq-nwin.onrender.com"
+import { ServerUrl } from './config'
 
 function App() {
 
